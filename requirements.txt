@@ -1,0 +1,9 @@
+streamlit==1.25.0
+opencv-python
+Pillow
+scikit-image
+numpy
+torch
+transformers
+streamlit-drawable-canvas
+opencv-python-headless
