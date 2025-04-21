@@ -524,537 +524,617 @@ def visualize_objects_with_dimensions(image_bgr, objects_analysis, roi_box=None)
 
     return vis_img
 
-# --- Main App Logic ---
-def main():
-    # --- Initialization and State Management ---
-    if 'depth_estimated' not in st.session_state:
-        st.session_state.depth_estimated = False
-    if 'roi_defined_by_canvas' not in st.session_state:
-        st.session_state.roi_defined_by_canvas = False # Use a new flag for canvas ROI
-    if 'results_calculated' not in st.session_state:
-        st.session_state.results_calculated = False
-    if 'uploaded_file_id' not in st.session_state:
-        st.session_state.uploaded_file_id = None
+# --- Keep ALL previous code *before* the main() function ---
+# (Imports, warnings, page_config, helper functions, sidebar config)
+# --- Model Loading (Keep as is) ---
+@st.cache_resource
+def load_model():
+    """Load the depth estimation model."""
+    # ... (load_model function content remains the same) ...
+    st.info("Loading depth estimation model... This might take a minute on first run.")
+    try:
+        processor = DPTImageProcessor.from_pretrained(MODEL_NAME)
+        model = DPTForDepthEstimation.from_pretrained(MODEL_NAME)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model.to(device)
+        model.eval()
+        st.success("Model loaded successfully.")
+        return processor, model, device
+    except Exception as e:
+        st.error(f"Error loading model: {e}")
+        st.error("Please ensure you have an internet connection and the necessary libraries installed.")
+        return None, None, None
 
-    # --- Model Loading ---
+# --- Other Helper Functions (Keep as is) ---
+# predict_depth, normalize_depth_for_display, calculate_iou,
+# detect_objects..., calculate_real_world_dimensions, visualize_objects_with_dimensions
+
+# --- Sidebar Configuration (Keep as is) ---
+# ... (Sidebar code remains the same) ...
+
+# ... (rest of sidebar camera/advanced settings)
+
+
+# --- Modified Main App Logic ---
+def main():
+    # --- Initialization and State Management (Expanded for Two Views) ---
+    views = ['front', 'side']
+    for view in views:
+        # Initialize state keys for each view if they don't exist
+        if f'depth_estimated_{view}' not in st.session_state: st.session_state[f'depth_estimated_{view}'] = False
+        if f'roi_defined_{view}' not in st.session_state: st.session_state[f'roi_defined_{view}'] = False
+        if f'results_calculated_{view}' not in st.session_state: st.session_state[f'results_calculated_{view}'] = False
+        if f'uploaded_file_id_{view}' not in st.session_state: st.session_state[f'uploaded_file_id_{view}'] = None
+
+    # --- Model Loading --- (Done once)
     processor, model, device = load_model()
     if not all([processor, model, device]):
         st.stop() # Stop execution if model loading failed
 
-    # --- Image Upload ---
-    uploaded_file = st.file_uploader("1. Upload an image", type=["jpg", "jpeg", "png"])
-
-    if uploaded_file is not None:
-        new_file_id = f"{uploaded_file.name}-{uploaded_file.size}"
-
-        if st.session_state.uploaded_file_id != new_file_id:
-            st.session_state.depth_estimated = False
-            st.session_state.roi_defined_by_canvas = False # Reset new flag
-            st.session_state.results_calculated = False
-            st.session_state.uploaded_file_id = new_file_id
-            # Clear previous results/data if needed
-            # Kept roi_box_coords as it's still used internally
-            # Added display_scale_factor to clear list
-            for key in ['depth_map', 'depth_colored', 'image_bgr', 'image_rgb', 'image_pil', 'original_width', 'original_height', 'object_analysis_results', 'roi_box_coords', 'visualization', 'scale_factor', 'estimated_distance_ref', 'display_scale_factor']:
-                if key in st.session_state:
-                    del st.session_state[key]
-            st.info("New image uploaded. Please proceed with depth estimation.")
-
-        # Load and display the uploaded image
-        try:
-            uploaded_file.seek(0)
-            file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-            image_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-            if image_bgr is None:
-                st.error("Could not decode image. Please upload a valid JPG, JPEG, or PNG file.")
-                st.session_state.uploaded_file_id = None
-                return
-            image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-            image_pil = Image.fromarray(image_rgb) # Keep PIL version for canvas
-            original_width, original_height = image_pil.size
-
-            # Store image data in session state only once per file load
-            if 'image_bgr' not in st.session_state:
-                st.session_state.image_bgr = image_bgr
-                st.session_state.image_rgb = image_rgb
-                st.session_state.image_pil = image_pil # Store PIL image
-                st.session_state.original_width = original_width
-                st.session_state.original_height = original_height
-
-            # Show original image first
-            st.image(image_rgb, caption="Uploaded Image", use_column_width=True)
-
-        except Exception as e:
-            st.error(f"Error loading image: {e}")
-            st.session_state.uploaded_file_id = None
-            return
-
-        # --- Step 1: Depth Estimation ---
-        st.subheader("2. Estimate Depth Map")
-        if 'image_pil' in st.session_state: # Need PIL image for depth prediction
-            if st.button("Estimate Depth", key="estimate_depth_btn", disabled=st.session_state.depth_estimated):
-                with st.spinner("🧠 Estimating depth map... This may take a moment."):
-                    relative_depth_map = predict_depth(st.session_state.image_pil, processor, model, device)
-
-                    if relative_depth_map is not None:
-                        st.session_state.depth_map = relative_depth_map
-                        st.session_state.depth_colored = normalize_depth_for_display(relative_depth_map)
-                        st.session_state.depth_estimated = True
-                        # Reset subsequent steps if depth is re-estimated
-                        st.session_state.roi_defined_by_canvas = False # Reset new flag
-                        st.session_state.results_calculated = False
-                        # Clear ROI coords and scale factor too
-                        for key in ['object_analysis_results', 'visualization', 'scale_factor', 'estimated_distance_ref', 'roi_box_coords', 'display_scale_factor']:
-                            if key in st.session_state: del st.session_state[key]
-                        st.experimental_rerun()
-                    else:
-                        st.error("Depth estimation failed.")
-
-            if st.session_state.depth_estimated and 'depth_colored' in st.session_state:
-                st.image(st.session_state.depth_colored, caption="Estimated Depth Map (Relative)", use_column_width=True)
-        else:
-            st.warning("Waiting for image data...")
-
-
-        # --- Step 2: Reference Object Selection (with Resizing) ---
-        if st.session_state.depth_estimated:
-            st.subheader("3. Select Reference Object")
-            st.markdown(f"Draw a rectangle on the image below around your reference object (known width: **{KNOWN_OBJECT_WIDTH_METERS * 100:.1f} cm**). The image may be scaled down for easier drawing if it's large.")
-
-            # Ensure PIL image is available for the canvas background
-            if 'image_pil' in st.session_state:
-                original_pil_image = st.session_state.image_pil
-                original_width = st.session_state.original_width
-                original_height = st.session_state.original_height
-
-                # --- START: RESIZING LOGIC ---
-                # Calculate display dimensions, respecting MAX_CANVAS_DISPLAY_WIDTH
-                if original_width > MAX_CANVAS_DISPLAY_WIDTH:
-                    display_scale_factor = MAX_CANVAS_DISPLAY_WIDTH / original_width
-                    display_width = MAX_CANVAS_DISPLAY_WIDTH
-                    display_height = int(original_height * display_scale_factor)
-                    # Use LANCZOS or ANTIALIAS for better quality resizing
-                    try:
-                        # Pillow >= 9.1.0 uses Resampling enum
-                        display_image = original_pil_image.resize((display_width, display_height), Image.Resampling.LANCZOS)
-                    except AttributeError:
-                        # Older Pillow versions use integer constants
-                        display_image = original_pil_image.resize((display_width, display_height), Image.LANCZOS) # Use ANTIALIAS as fallback if needed
-                    st.session_state.display_scale_factor = display_scale_factor # Store for coordinate conversion
-                    # st.info(f"Image resized for drawing canvas to {display_width}x{display_height}px (Scale: {display_scale_factor:.2f})") # Optional info
-                else:
-                    # No resizing needed if image is already small enough
-                    display_image = original_pil_image
-                    display_width = original_width
-                    display_height = original_height
-                    st.session_state.display_scale_factor = 1.0 # Scale factor is 1
-                # --- END: RESIZING LOGIC ---
-
-                # Configure canvas properties
-                stroke_width = 3
-                stroke_color = "#FFFF00"  # Yellow in hex
-                bg_image = display_image # Use the (potentially resized) display image
-                drawing_mode = "rect"
-                canvas_key = "ref_canvas"
-
-                # Create the canvas component
-                canvas_result = st_canvas(
-                    fill_color="rgba(255, 165, 0, 0.1)",  # Transparent orange fill (optional)
-                    stroke_width=stroke_width,
-                    stroke_color=stroke_color,
-                    background_image=bg_image, # Use display image
-                    update_streamlit=True, # Important: Update Streamlit on drawing events
-                    height=display_height, # Use display dimensions
-                    width=display_width,   # Use display dimensions
-                    drawing_mode=drawing_mode,
-                    key=canvas_key,
-                )
-
-                # Process the drawing result
-                if canvas_result.json_data is not None:
-                    objects = canvas_result.json_data.get("objects", [])
-                    # Use the latest drawn rectangle
-                    if objects and objects[-1]["type"] == "rect":
-                        rect_data = objects[-1]
-                        # These are coordinates on the *display* canvas
-                        display_left = rect_data["left"]
-                        display_top = rect_data["top"]
-                        display_width_drawn = rect_data["width"]
-                        display_height_drawn = rect_data["height"]
-
-                        # Basic validation on drawn dimensions
-                        if display_width_drawn > 5 and display_height_drawn > 5: # Require a minimum size on canvas
-                             # --- START: SCALE COORDINATES BACK ---
-                             # Retrieve the scale factor used for display
-                            scale_factor = st.session_state.get('display_scale_factor', 1.0) # Default to 1 if not found
-
-                            # Apply inverse scaling to get coordinates relative to the *original* image
-                            original_x1 = display_left / scale_factor
-                            original_y1 = display_top / scale_factor
-                            original_x2 = (display_left + display_width_drawn) / scale_factor
-                            original_y2 = (display_top + display_height_drawn) / scale_factor
-                            # --- END: SCALE COORDINATES BACK ---
-
-                            # Store the *original* scaled coordinates
-                            roi_box_coords = ((original_x1, original_y1), (original_x2, original_y2))
-                            st.session_state.roi_box_coords = roi_box_coords
-                            st.session_state.roi_defined_by_canvas = True
-                            # Optionally display coords for confirmation (use original values)
-                            # st.write(f"Reference Box Selected (Original Coords): ({original_x1:.0f}, {original_y1:.0f}) to ({original_x2:.0f}, {original_y2:.0f})")
-                        else:
-                             # If box is too small or user finished drawing but result is invalid
-                             if st.session_state.roi_defined_by_canvas: # Only reset if it was previously valid
-                                 st.session_state.roi_defined_by_canvas = False
-                                 if 'roi_box_coords' in st.session_state: del st.session_state.roi_box_coords
-                             st.warning("Please draw a valid rectangle for the reference object (minimum size required).")
-
-                    elif not objects and st.session_state.roi_defined_by_canvas:
-                        # Handle case where user deletes the rectangle
-                        st.session_state.roi_defined_by_canvas = False
-                        if 'roi_box_coords' in st.session_state: del st.session_state.roi_box_coords
-                        st.info("Reference rectangle cleared.")
-
-                # If no valid rectangle drawn yet
-                if not st.session_state.roi_defined_by_canvas:
-                    st.info("Draw the reference rectangle on the image above.")
-
-            else:
-                st.warning("Waiting for image data to initialize drawing canvas.")
-
-
-        # --- Step 3: Measure Objects ---
-        if st.session_state.roi_defined_by_canvas:
-            st.subheader("4. Measure Objects")
-             # Make sure essential data for measurement is present
-            if 'depth_map' in st.session_state and \
-               'roi_box_coords' in st.session_state and \
-               'original_width' in st.session_state and \
-               'original_height' in st.session_state:
-
-                # Disable button if results are already calculated OR if ROI is no longer defined
-                measure_disabled = st.session_state.results_calculated or not st.session_state.roi_defined_by_canvas
-                if st.button("Measure", key="measure_btn", disabled=measure_disabled):
-                    with st.spinner("📏 Measuring objects..."):
-                        # --- Scale Factor Calculation ---
-                        # Uses st.session_state.roi_box_coords which now hold ORIGINAL scaled coordinates
-                        roi_box_coords = st.session_state.roi_box_coords
-                        # Ensure ROI coordinates are rounded for pixel access but retain original scale relationship
-                        roi_x1, roi_y1 = roi_box_coords[0]
-                        roi_x2, roi_y2 = roi_box_coords[1]
-
-                        # Get the width *in pixels on the original image scale*
-                        object_width_pixels_ref = round(roi_x2) - round(roi_x1)
-
-                        # Ensure ROI coordinates are integers and within bounds *for depth map slicing*
-                        # We use floor/ceil or round appropriately to capture the intended area on the original depth map
-                        roi_y1_idx, roi_y2_idx = max(0, int(round(roi_y1))), min(st.session_state.original_height, int(round(roi_y2)))
-                        roi_x1_idx, roi_x2_idx = max(0, int(round(roi_x1))), min(st.session_state.original_width, int(round(roi_x2)))
-
-                        # Check pixel width again after rounding/clamping for index usage
-                        if object_width_pixels_ref <= 0 or roi_y2_idx <= roi_y1_idx or roi_x2_idx <= roi_x1_idx:
-                            st.error("Invalid Reference Object dimensions selected (width or height is zero or negative after scaling/rounding). Please redraw the yellow box.")
-                            st.stop() # Stop processing this step
-
-                        # Extract depth values within the ROI using the calculated indices
-                        roi_depth_values = st.session_state.depth_map[roi_y1_idx:roi_y2_idx, roi_x1_idx:roi_x2_idx]
-                        valid_roi_depths = roi_depth_values[~np.isnan(roi_depth_values) & (roi_depth_values > 1e-9)] # Use epsilon
-
-                        if valid_roi_depths.size == 0:
-                            st.error("Could not get valid depth data for the Reference Object ROI. Try redrawing the box slightly or check depth map quality.")
-                            st.stop() # Stop processing this step
-
-                        # Use median depth for robustness against outliers
-                        d_relative_ref = np.median(valid_roi_depths)
-                        if d_relative_ref <= 1e-9: # Use a small epsilon
-                            st.error(f"Relative depth of the reference object ({d_relative_ref:.2e}) is too small or zero. Check ROI placement.")
-                            st.stop() # Stop processing this step
-
-                        # Calculate Scale Factor (Metric Depth = scale_factor / relative_depth)
-                        # This part remains the same, using object_width_pixels_ref which is scaled correctly
-                        scale_factor = -1 # Initialize
-                        estimated_distance_ref = -1 # Initialize
-
-                        try:
-                            if USE_FOCAL_LENGTH_METHOD:
-                                if KNOWN_FOCAL_LENGTH_PIXELS is None or KNOWN_FOCAL_LENGTH_PIXELS <= 0:
-                                    st.error("Focal length is not set or invalid. Please check sidebar settings.")
-                                    st.stop()
-                                scale_factor = (KNOWN_OBJECT_WIDTH_METERS * KNOWN_FOCAL_LENGTH_PIXELS * d_relative_ref) / object_width_pixels_ref
-                                estimated_distance_ref = scale_factor / d_relative_ref # D = scale / d
-
-                            else: # Use FoV method
-                                if HFOV_DEGREES is None or HFOV_DEGREES <= 0 or VFOV_DEGREES is None or VFOV_DEGREES <=0 or st.session_state.original_width <= 0:
-                                    st.error("Horizontal/Vertical FoV or image width is not set or invalid. Please check sidebar settings.")
-                                    st.stop()
-                                hfov_radians = math.radians(HFOV_DEGREES)
-                                tan_half_hfov = math.tan(hfov_radians / 2)
-                                if abs(tan_half_hfov) <= 1e-9:
-                                    st.error("Invalid Horizontal FoV resulting in tan(HFOV/2) near zero.")
-                                    st.stop()
-                                scale_factor = (KNOWN_OBJECT_WIDTH_METERS * st.session_state.original_width * d_relative_ref) / \
-                                            (object_width_pixels_ref * 2 * tan_half_hfov)
-                                estimated_distance_ref = scale_factor / d_relative_ref # D = scale / d
-
-                            if scale_factor <= 0 or estimated_distance_ref <= 0 or not np.isfinite(scale_factor) or not np.isfinite(estimated_distance_ref):
-                                st.error(f"Failed to calculate a valid scale factor ({scale_factor=}) or reference distance ({estimated_distance_ref=}). Check parameters and ROI.")
-                                st.stop()
-
-                            st.session_state.scale_factor = scale_factor
-                            st.session_state.estimated_distance_ref = estimated_distance_ref
-
-                        except ZeroDivisionError:
-                            st.error("Calculation error: Division by zero. Check reference object width in pixels (is it > 0?) or tan(FoV/2).")
-                            st.stop()
-                        except Exception as e:
-                            st.error(f"Error calculating scale factor: {e}")
-                            st.stop()
-
-                        # --- Detect Other Objects ---
-                        # (Detection logic remains the same, operating on the full-res depth map)
-                        detected_boxes = multistage_object_detection(
-                            st.session_state.depth_map,
-                            gradient_thresh=gradient_threshold,
-                            min_size=min_object_size,
-                            max_num=max_objects,
-                            padding_ratio=object_padding_ratio
-                        )
-
-                        # --- Filter Detected Objects (Remove Reference, large overlaps, etc.) ---
-                        # (Filtering logic remains the same, comparing against original scale roi_box_coords)
-                        filtered_boxes_info = []
-                        if detected_boxes:
-                            iou_threshold_ref = 0.3 # Don't keep boxes overlapping significantly with Ref ROI
-                            iou_threshold_overlap = 0.5 # Don't keep boxes overlapping significantly with each other (NMS like)
-                            min_box_area = 50 # Minimum pixel area for a detected box
-                            max_box_area_ratio = 0.95 # Maximum image area ratio
-
-                            candidate_boxes_with_depth = []
-
-                            # Calculate median depth for each detected box first
-                            for i, det_box in enumerate(detected_boxes):
-                                # Ensure coords are rounded for index usage
-                                x1, y1 = round(det_box[0][0]), round(det_box[0][1])
-                                x2, y2 = round(det_box[1][0]), round(det_box[1][1])
-                                y1_c, y2_c = max(0, int(y1)), min(st.session_state.original_height, int(y2))
-                                x1_c, x2_c = max(0, int(x1)), min(st.session_state.original_width, int(x2))
-
-                                if x2_c <= x1_c or y2_c <= y1_c: continue # Skip invalid boxes
-
-                                box_area = (x2_c - x1_c) * (y2_c - y1_c)
-                                image_area = st.session_state.original_width * st.session_state.original_height
-                                if box_area < min_box_area or (image_area > 0 and (box_area / image_area) > max_box_area_ratio):
-                                    continue # Skip too small or too large boxes
-
-                                det_depth_values = st.session_state.depth_map[y1_c:y2_c, x1_c:x2_c]
-                                valid_det_depths = det_depth_values[~np.isnan(det_depth_values) & (det_depth_values > 1e-9)]
-                                if valid_det_depths.size == 0: continue # Skip if no valid depth
-
-                                median_depth = np.median(valid_det_depths)
-                                if median_depth <= 1e-9: continue # Skip invalid relative depth
-
-                                # Store original float box coords for accuracy, but use clamped ints for depth calc
-                                candidate_boxes_with_depth.append({'index': i, 'box': det_box, 'median_depth': median_depth})
-
-                            # Sort candidates by depth (closer first) - helps in NMS-like filtering
-                            candidate_boxes_with_depth.sort(key=lambda item: item['median_depth'])
-
-                            # Filter based on IoU
-                            final_filtered_boxes = []
-                            processed_indices = set()
-                            ref_box_tuple = st.session_state.roi_box_coords # Get the reference box (original coords)
-
-                            for i in range(len(candidate_boxes_with_depth)):
-                                if i in processed_indices:
-                                    continue
-
-                                current_info = candidate_boxes_with_depth[i]
-                                current_box = current_info['box']
-
-                                # Check IoU with reference box (using original scale coords)
-                                try:
-                                    iou_ref = calculate_iou(current_box, ref_box_tuple)
-                                except Exception as e_iou_ref:
-                                    st.warning(f"Could not calculate IoU with reference for box {i}: {e_iou_ref}")
-                                    iou_ref = 0 # Assume no overlap if calc fails
-
-                                if iou_ref > iou_threshold_ref:
-                                    processed_indices.add(i)
-                                    continue # Skip if it overlaps too much with reference
-
-                                # NMS step: Check IoU with other *already selected* boxes
-                                suppress = False
-                                for selected_box_info in final_filtered_boxes:
-                                    try:
-                                        iou_nms = calculate_iou(current_box, selected_box_info['bbox'])
-                                    except Exception as e_iou_nms:
-                                        st.warning(f"Could not calculate IoU between boxes {i} and selected: {e_iou_nms}")
-                                        iou_nms = 0 # Assume no overlap if calc fails
-
-                                    if iou_nms > iou_threshold_overlap:
-                                        suppress = True
-                                        break # Suppress this box if it significantly overlaps with a *closer* selected one
-
-                                if not suppress:
-                                    # If not suppressed, add it to the final list
-                                    final_filtered_boxes.append({
-                                        'bbox': current_box,
-                                        'depth_relative': current_info['median_depth']
-                                    })
-                                    processed_indices.add(i) # Mark as processed/selected
-
-                            filtered_boxes_info = final_filtered_boxes
-
-
-                        # --- Calculate Dimensions for Filtered Objects ---
-                        # (Dimension calculation logic remains the same, using original scale bbox)
-                        object_analysis_results = []
-                        if filtered_boxes_info:
-                            scale_factor = st.session_state.scale_factor # Retrieve calculated scale factor
-                            for i, box_info in enumerate(filtered_boxes_info):
-                                bbox = box_info['bbox'] # These are original scale coords
-                                d_relative_detected = box_info['depth_relative']
-
-                                if d_relative_detected <= 1e-9: continue # Should have been filtered already, but double check
-
-                                # Calculate absolute depth
-                                absolute_depth_meters = scale_factor / d_relative_detected
-
-                                # Calculate real-world dimensions using original image width/height
-                                try:
-                                    width_m, height_m = calculate_real_world_dimensions(
-                                        absolute_depth_meters,
-                                        bbox, # Use original scale bbox
-                                        st.session_state.original_width,
-                                        st.session_state.original_height,
-                                        focal_length_pixels=KNOWN_FOCAL_LENGTH_PIXELS if USE_FOCAL_LENGTH_METHOD else None,
-                                        hfov_degrees=HFOV_DEGREES if not USE_FOCAL_LENGTH_METHOD else None,
-                                        vfov_degrees=VFOV_DEGREES if not USE_FOCAL_LENGTH_METHOD else None
-                                    )
-
-                                    # Basic sanity check on dimensions
-                                    # Ensure dimensions and depth are positive and finite, and within reasonable bounds
-                                    if np.isfinite(width_m) and np.isfinite(height_m) and np.isfinite(absolute_depth_meters) and \
-                                        0 < width_m < 100 and 0 < height_m < 100 and 0 < absolute_depth_meters < 200:
-                                        object_info = {
-                                            'index': i + 1, # User-friendly 1-based index
-                                            'bbox': bbox, # Store original scale bbox
-                                            'depth_meters': absolute_depth_meters,
-                                            'width_meters': width_m,
-                                            'height_meters': height_m,
-                                        }
-                                        object_analysis_results.append(object_info)
-                                    else:
-                                        st.warning(f"Object {i+1} dimensions ({width_m*100:.1f}x{height_m*100:.1f}cm @ {absolute_depth_meters:.2f}m) seem unrealistic or invalid and were filtered out.")
-
-                                except ValueError as e:
-                                    st.error(f"Dimension calculation error for Object {i+1}: {e}")
-                                except Exception as e_calc:
-                                    st.error(f"Unexpected error during dimension calculation for Object {i+1}: {e_calc}")
-
-                        st.session_state.object_analysis_results = object_analysis_results
-                        st.session_state.results_calculated = True
-                        st.experimental_rerun() # experimental_rerun to display results
-
-                else:
-                    # This else corresponds to the `if 'depth_map' in st.session_state...` check
-                    st.info("Waiting for depth map and ROI selection to be ready for measurement.")
-
-
-            # --- Display Measurement Results ---
-            if st.session_state.results_calculated:
-                st.subheader("5. Measurement Results")
-
-                # Reference object info
-                if 'estimated_distance_ref' in st.session_state:
-                     st.success(f"Reference Object Estimated Distance: **{st.session_state.estimated_distance_ref:.2f} meters**")
-                else:
-                    st.warning("Reference object distance could not be estimated.")
-
-                # Detected objects info
-                if 'object_analysis_results' in st.session_state and st.session_state.object_analysis_results:
-                    results = st.session_state.object_analysis_results
-                    st.write(f"Found **{len(results)}** object(s) (excluding reference):")
-
-                    # Display results in a table for better readability
-                    import pandas as pd
-                    display_data = []
-                    for obj in results:
-                        display_data.append({
-                            "Object #": obj['index'],
-                            "Distance (m)": f"{obj['depth_meters']:.2f}",
-                            "Width (cm)": f"{obj['width_meters']*100:.1f}",
-                            "Height (cm)": f"{obj['height_meters']*100:.1f}"
-                        })
-                    df = pd.DataFrame(display_data)
-                    st.dataframe(df.set_index("Object #"), use_container_width=True)
-
-                    # --- Visualization ---
-                    st.subheader("Visualization")
-                    st.markdown("Measurements displayed on the original image.")
-                    with st.spinner("🎨 Generating visualization..."):
-                        try:
-                             # Make sure image_bgr and roi_box_coords (original scale) are available
-                             if 'image_bgr' in st.session_state and 'roi_box_coords' in st.session_state:
-                                visualization = visualize_objects_with_dimensions(
-                                    st.session_state.image_bgr, # Use original BGR image
-                                    results, # Results contain original scale bboxes
-                                    st.session_state.roi_box_coords # Use original scale ROI coords
-                                )
-                                st.session_state.visualization = cv2.cvtColor(visualization, cv2.COLOR_BGR2RGB) # Store as RGB for display
-                             else:
-                                st.warning("Could not generate visualization due to missing image or ROI data.")
-                                if 'image_rgb' in st.session_state:
-                                    st.session_state.visualization = st.session_state.image_rgb # Fallback to original
-                                else:
-                                    st.session_state.visualization = None # No image to show
-
-                        except Exception as e_vis:
-                            st.error(f"Error generating visualization: {e_vis}")
-                            if 'image_rgb' in st.session_state:
-                                st.session_state.visualization = st.session_state.image_rgb # Fallback to original
-                            else:
-                                st.session_state.visualization = None # No image to show
-
-
-                    if 'visualization' in st.session_state and st.session_state.visualization is not None:
-                        st.image(st.session_state.visualization, caption="Image with Measured Objects", use_column_width=True)
-                    elif 'visualization' not in st.session_state :
-                         st.warning("Visualization could not be generated.")
-
-
-                else:
-                    st.warning("No other objects were detected or met the filtering criteria.")
-
-                # Add a button to clear results and allow remeasuring
-                if st.button("Reset Measurements", key="reset_measurements"):
-                    st.session_state.results_calculated = False
-                    # Keep depth map and ROI drawing, but clear measurements and visualization
-                    keys_to_clear_on_reset = ['object_analysis_results', 'visualization', 'scale_factor', 'estimated_distance_ref']
-                    for key in keys_to_clear_on_reset:
+    # --- Update Title and Description for Two Views ---
+    st.title("📏 3D Object Measurement Tool (Two Views)")
+    st.markdown("""
+    Estimate Width, Height, and Depth using **two images**: one front view and one side view.
+    1.  **Upload Images:** Upload both Front and Side views using the buttons below.
+    2.  **Configuration:** Set the reference object's known dimension and camera parameters in the sidebar. The reference object (or one with the same known dimension) must be clearly visible and selectable in **both** images.
+    3.  **Process Each View:** For *both* the Front and Side views displayed below:
+        *   Click "Estimate Depth".
+        *   Draw a rectangle on the image to select the Reference Object.
+        *   Click "Measure [View]" to calculate dimensions for that specific view.
+    4.  **Combined Results:** Once *both* views have been successfully measured, the final 3D dimensions will be displayed at the bottom.
+    """)
+
+    # --- Image Upload (Two Uploaders) ---
+    st.subheader("1. Upload Images")
+    col1_upload, col2_upload = st.columns(2)
+    with col1_upload:
+        uploaded_file_front = st.file_uploader("Upload Front View Image", type=["jpg", "jpeg", "png"], key="upload_front")
+    with col2_upload:
+        uploaded_file_side = st.file_uploader("Upload Side View Image", type=["jpg", "jpeg", "png"], key="upload_side")
+
+    # --- Processing Sections (using columns) ---
+    st.subheader("2. Process Images (Estimate Depth, Select Reference, Measure)")
+    col_proc1, col_proc2 = st.columns(2)
+
+    # ===========================================================
+    # ======= FRONT VIEW PROCESSING (Revised Logic) =============
+    # ===========================================================
+    with col_proc1:
+        st.markdown("#### Front View")
+        view = 'front' # Define current view context
+        uploaded_file = uploaded_file_front # Use specific variable
+
+        # --- Upload Handling & Image Loading (Front) ---
+        if uploaded_file is not None:
+            new_file_id = f"{uploaded_file.name}-{uploaded_file.size}"
+            # Reset state ONLY if file changed for this view
+            if st.session_state.get(f'uploaded_file_id_{view}') != new_file_id:
+                st.session_state[f'uploaded_file_id_{view}'] = new_file_id
+                # **Explicitly list keys to clear for THIS view**
+                keys_to_clear = [
+                    f'depth_estimated_{view}', f'roi_defined_{view}', f'results_calculated_{view}',
+                    f'depth_map_{view}', f'depth_colored_{view}', f'image_bgr_{view}', f'image_rgb_{view}',
+                    f'image_pil_{view}', f'original_width_{view}', f'original_height_{view}',
+                    f'object_analysis_results_{view}', f'roi_box_coords_{view}', f'visualization_{view}',
+                    f'scale_factor_{view}', f'estimated_distance_ref_{view}', f'display_scale_factor_{view}'
+                ]
+                for key in keys_to_clear:
+                    if key in st.session_state: del st.session_state[key]
+                # Ensure base flags are False after clearing
+                st.session_state[f'depth_estimated_{view}'] = False
+                st.session_state[f'roi_defined_{view}'] = False
+                st.session_state[f'results_calculated_{view}'] = False
+                st.info(f"New {view.capitalize()} view image uploaded. State reset for this view.")
+                # Don't rerun here, let the rest of the script execute with the new file
+
+            # Load image data if it doesn't exist in state for this view
+            if f'image_pil_{view}' not in st.session_state:
+                try:
+                    uploaded_file.seek(0) # Use the specific upload variable
+                    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+                    image_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+                    if image_bgr is None: raise ValueError("Could not decode image")
+                    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+                    image_pil = Image.fromarray(image_rgb)
+                    st.session_state[f'image_bgr_{view}'] = image_bgr
+                    st.session_state[f'image_rgb_{view}'] = image_rgb
+                    st.session_state[f'image_pil_{view}'] = image_pil
+                    st.session_state[f'original_width_{view}'] = image_pil.width
+                    st.session_state[f'original_height_{view}'] = image_pil.height
+                except Exception as e:
+                    st.error(f"Error loading {view.capitalize()} image: {e}")
+                    st.session_state[f'uploaded_file_id_{view}'] = None # Invalidate file ID on error
+                    # Clear potentially partially loaded image data
+                    for key in [f'image_bgr_{view}', f'image_rgb_{view}', f'image_pil_{view}']:
                          if key in st.session_state: del st.session_state[key]
-                    # We DON'T clear roi_box_coords or roi_defined_by_canvas here,
-                    # allowing the user to re-measure with the same ROI if desired.
-                    # display_scale_factor also remains as it depends only on the image.
+
+            # Display uploaded image (if loaded successfully)
+            if f'image_rgb_{view}' in st.session_state:
+                 st.image(st.session_state[f'image_rgb_{view}'], caption=f"{view.capitalize()} View Uploaded", use_column_width=True)
+
+
+            # --- Step 1: Depth Estimation (Front) ---
+            # Enable button only if image is loaded AND depth not yet estimated
+            depth_button_disabled = not (f'image_pil_{view}' in st.session_state) or st.session_state.get(f'depth_estimated_{view}', False)
+            if st.button(f"Estimate Depth ({view.capitalize()})", key=f"estimate_depth_{view}", disabled=depth_button_disabled):
+                if f'image_pil_{view}' in st.session_state: # Double check image exists before predicting
+                    with st.spinner(f"Estimating {view.capitalize()} depth..."):
+                        relative_depth_map = predict_depth(st.session_state[f'image_pil_{view}'], processor, model, device)
+                        if relative_depth_map is not None:
+                            st.session_state[f'depth_map_{view}'] = relative_depth_map
+                            st.session_state[f'depth_colored_{view}'] = normalize_depth_for_display(relative_depth_map)
+                            st.session_state[f'depth_estimated_{view}'] = True
+                            # Reset subsequent steps for this view upon successful estimation
+                            st.session_state[f'roi_defined_{view}'] = False
+                            st.session_state[f'results_calculated_{view}'] = False
+                            # Clear potentially stale ROI/results data
+                            for key in [f'roi_box_coords_{view}', f'object_analysis_results_{view}', f'visualization_{view}', f'scale_factor_{view}', f'estimated_distance_ref_{view}', f'display_scale_factor_{view}']:
+                                if key in st.session_state: del st.session_state[key]
+                            st.experimental_rerun() # Rerun to update UI state (e.g., enable ROI)
+                        else:
+                            st.error(f"{view.capitalize()} Depth estimation failed.")
+                else:
+                    st.warning(f"Cannot estimate depth, {view.capitalize()} image data missing.")
+
+            # Display depth map if estimated
+            if st.session_state.get(f'depth_estimated_{view}', False) and f'depth_colored_{view}' in st.session_state:
+                st.image(st.session_state[f'depth_colored_{view}'], caption=f"{view.capitalize()} Depth Map", use_column_width=True)
+            elif not (f'image_pil_{view}' in st.session_state): # If image is not even loaded
+                 pass # No need to show a message here, handled by button state
+
+
+            # --- Step 2: Reference Object Selection (Front) ---
+            if st.session_state.get(f'depth_estimated_{view}', False): # Only show if depth is done
+                st.markdown(f"**Select Reference ({view.capitalize()})** - Draw rectangle (Known Dim: {KNOWN_OBJECT_WIDTH_METERS*100:.1f} cm)")
+                if f'image_pil_{view}' in st.session_state: # Check necessary data exists
+                    # ... (Keep the Resizing Logic and Canvas setup exactly as before) ...
+                    MAX_CANVAS_DISPLAY_WIDTH_VIEW = 600
+                    original_pil_image = st.session_state[f'image_pil_{view}']
+                    original_width = st.session_state[f'original_width_{view}']
+                    original_height = st.session_state[f'original_height_{view}']
+                    if original_width > MAX_CANVAS_DISPLAY_WIDTH_VIEW:
+                        display_scale_factor = MAX_CANVAS_DISPLAY_WIDTH_VIEW / original_width
+                        display_width = MAX_CANVAS_DISPLAY_WIDTH_VIEW
+                        display_height = int(original_height * display_scale_factor)
+                        try: display_image = original_pil_image.resize((display_width, display_height), Image.Resampling.LANCZOS)
+                        except AttributeError: display_image = original_pil_image.resize((display_width, display_height), Image.LANCZOS)
+                        st.session_state[f'display_scale_factor_{view}'] = display_scale_factor
+                    else:
+                        display_image = original_pil_image; display_width = original_width; display_height = original_height
+                        st.session_state[f'display_scale_factor_{view}'] = 1.0
+
+                    canvas_result = st_canvas(
+                        fill_color="rgba(255, 165, 0, 0.1)", stroke_width=3, stroke_color="#FFFF00",
+                        background_image=display_image, update_streamlit=True,
+                        height=display_height, width=display_width, drawing_mode="rect",
+                        key=f"canvas_{view}",
+                    )
+                    # --- Process Canvas Result (Front) ---
+                    # ... (Keep the canvas result processing logic exactly as before, using `view` key) ...
+                    if canvas_result.json_data is not None:
+                        objects = canvas_result.json_data.get("objects", [])
+                        if objects and objects[-1]["type"] == "rect":
+                            # ... (rest of rect processing, setting roi_box_coords_{view}, roi_defined_{view}) ...
+                            rect_data = objects[-1]
+                            display_left = rect_data["left"]; display_top = rect_data["top"]
+                            display_width_drawn = rect_data["width"]; display_height_drawn = rect_data["height"]
+                            if display_width_drawn > 5 and display_height_drawn > 5:
+                                scale_f = st.session_state.get(f'display_scale_factor_{view}', 1.0)
+                                ox1 = display_left / scale_f; oy1 = display_top / scale_f
+                                ox2 = (display_left + display_width_drawn) / scale_f
+                                oy2 = (display_top + display_height_drawn) / scale_f
+                                roi_coords = ((ox1, oy1), (ox2, oy2))
+                                old_roi = st.session_state.get(f'roi_box_coords_{view}')
+                                roi_changed = old_roi != roi_coords
+                                st.session_state[f'roi_box_coords_{view}'] = roi_coords
+                                if not st.session_state.get(f'roi_defined_{view}', False) or roi_changed:
+                                    st.session_state[f'roi_defined_{view}'] = True
+                                    st.session_state[f'results_calculated_{view}'] = False # Reset results if ROI changed
+                                    st.success(f"{view.capitalize()} Reference Selected/Updated.")
+                            else: # Box too small
+                                if st.session_state.get(f'roi_defined_{view}', False): # Only reset if it was defined
+                                    st.session_state[f'roi_defined_{view}'] = False
+                                    if f'roi_box_coords_{view}' in st.session_state: del st.session_state[f'roi_box_coords_{view}']
+                                    st.warning(f"{view.capitalize()} Ref rectangle too small.")
+                        elif not objects and st.session_state.get(f'roi_defined_{view}', False): # Box deleted
+                            st.session_state[f'roi_defined_{view}'] = False
+                            if f'roi_box_coords_{view}' in st.session_state: del st.session_state[f'roi_box_coords_{view}']
+                            st.info(f"{view.capitalize()} Reference rectangle cleared.")
+
+                    # Show guidance if ROI not defined
+                    if not st.session_state.get(f'roi_defined_{view}', False):
+                        st.info(f"Draw the reference rectangle on the {view.capitalize()} view image above.")
+                else:
+                    st.warning(f"Waiting for {view.capitalize()} image data for canvas.")
+
+
+            # --- Step 3: Measure Objects (Front) ---
+            if st.session_state.get(f'roi_defined_{view}', False): # Only show if ROI is drawn
+                # Check if all necessary data is present before enabling button
+                measure_ready = all(k in st.session_state for k in [f'depth_map_{view}', f'roi_box_coords_{view}', f'original_width_{view}', f'original_height_{view}'])
+                measure_button_disabled = not measure_ready or st.session_state.get(f'results_calculated_{view}', False)
+
+                if st.button(f"Measure ({view.capitalize()})", key=f"measure_{view}", disabled=measure_button_disabled):
+                    if measure_ready: # Double check before processing
+                        with st.spinner(f"Measuring {view.capitalize()} view objects..."):
+                            try: # Wrap calculation in try-except
+                                # --- Calculation Logic (Scale Factor, Detect, Filter, Dimensions) ---
+                                # ... (Keep the entire calculation block exactly as before, using `view` key) ...
+                                roi_box_coords = st.session_state[f'roi_box_coords_{view}']
+                                roi_x1, roi_y1 = roi_box_coords[0]; roi_x2, roi_y2 = roi_box_coords[1]
+                                object_width_pixels_ref = round(roi_x2) - round(roi_x1)
+                                roi_y1_idx = max(0, int(round(roi_y1))); roi_y2_idx = min(st.session_state[f'original_height_{view}'], int(round(roi_y2)))
+                                roi_x1_idx = max(0, int(round(roi_x1))); roi_x2_idx = min(st.session_state[f'original_width_{view}'], int(round(roi_x2)))
+                                if object_width_pixels_ref <= 0 or roi_y2_idx <= roi_y1_idx or roi_x2_idx <= roi_x1_idx: raise ValueError("Invalid Reference Object dimensions.")
+                                roi_depth_values = st.session_state[f'depth_map_{view}'][roi_y1_idx:roi_y2_idx, roi_x1_idx:roi_x2_idx]
+                                valid_roi_depths = roi_depth_values[~np.isnan(roi_depth_values) & (roi_depth_values > 1e-9)]
+                                if valid_roi_depths.size == 0: raise ValueError("No valid depth for Reference ROI.")
+                                d_relative_ref = np.median(valid_roi_depths)
+                                if d_relative_ref <= 1e-9: raise ValueError("Reference depth is too small.")
+                                scale_factor = -1; estimated_distance_ref = -1
+                                img_width = st.session_state[f'original_width_{view}']; img_height = st.session_state[f'original_height_{view}']
+                                if USE_FOCAL_LENGTH_METHOD:
+                                    if KNOWN_FOCAL_LENGTH_PIXELS <= 0: raise ValueError("Focal length invalid.")
+                                    scale_factor = (KNOWN_OBJECT_WIDTH_METERS * KNOWN_FOCAL_LENGTH_PIXELS * d_relative_ref) / object_width_pixels_ref
+                                    estimated_distance_ref = scale_factor / d_relative_ref
+                                else: # FoV method
+                                    if HFOV_DEGREES <= 0 or VFOV_DEGREES <=0 or img_width <= 0: raise ValueError("FoV/Image params invalid.")
+                                    hfov_radians = math.radians(HFOV_DEGREES); tan_half_hfov = math.tan(hfov_radians / 2)
+                                    if abs(tan_half_hfov) <= 1e-9: raise ValueError("tan(HFOV/2) near zero.")
+                                    scale_factor = (KNOWN_OBJECT_WIDTH_METERS * img_width * d_relative_ref) / (object_width_pixels_ref * 2 * tan_half_hfov)
+                                    estimated_distance_ref = scale_factor / d_relative_ref
+                                if scale_factor <= 0 or estimated_distance_ref <= 0 or not np.isfinite(scale_factor) or not np.isfinite(estimated_distance_ref): raise ValueError(f"Invalid scale factor/ref distance")
+                                st.session_state[f'scale_factor_{view}'] = scale_factor
+                                st.session_state[f'estimated_distance_ref_{view}'] = estimated_distance_ref
+
+                                detected_boxes = multistage_object_detection(st.session_state[f'depth_map_{view}'], gradient_threshold, min_object_size, max_objects, object_padding_ratio)
+                                object_analysis_results = []
+                                if detected_boxes:
+                                    iou_threshold_ref = 0.3
+                                    ref_box_tuple = st.session_state[f'roi_box_coords_{view}']
+                                    for i, det_box in enumerate(detected_boxes):
+                                        iou_ref = calculate_iou(det_box, ref_box_tuple)
+                                        if iou_ref <= iou_threshold_ref:
+                                            x1_det, y1_det = round(det_box[0][0]), round(det_box[0][1]); x2_det, y2_det = round(det_box[1][0]), round(det_box[1][1])
+                                            y1_c, y2_c = max(0, int(y1_det)), min(img_height, int(y2_det)); x1_c, x2_c = max(0, int(x1_det)), min(img_width, int(x2_det))
+                                            if x2_c <= x1_c or y2_c <= y1_c: continue
+                                            det_depth_values = st.session_state[f'depth_map_{view}'][y1_c:y2_c, x1_c:x2_c]
+                                            valid_det_depths = det_depth_values[~np.isnan(det_depth_values) & (det_depth_values > 1e-9)]
+                                            if valid_det_depths.size > 0:
+                                                median_depth_rel = np.median(valid_det_depths)
+                                                if median_depth_rel > 1e-9:
+                                                    abs_depth = scale_factor / median_depth_rel
+                                                    width_m, height_m = calculate_real_world_dimensions(abs_depth, det_box, img_width, img_height, KNOWN_FOCAL_LENGTH_PIXELS if USE_FOCAL_LENGTH_METHOD else None, HFOV_DEGREES if not USE_FOCAL_LENGTH_METHOD else None, VFOV_DEGREES if not USE_FOCAL_LENGTH_METHOD else None)
+                                                    if np.isfinite(width_m) and np.isfinite(height_m) and width_m > 0 and height_m > 0 and abs_depth > 0:
+                                                        object_analysis_results.append({'index': 1, 'bbox': det_box, 'depth_meters': abs_depth, 'width_meters': width_m, 'height_meters': height_m})
+                                                        break # Stop after first valid target
+
+                                st.session_state[f'object_analysis_results_{view}'] = object_analysis_results
+                                st.session_state[f'results_calculated_{view}'] = True
+
+                                if object_analysis_results:
+                                    vis_img = visualize_objects_with_dimensions(st.session_state[f'image_bgr_{view}'], object_analysis_results, st.session_state[f'roi_box_coords_{view}'])
+                                    st.session_state[f'visualization_{view}'] = cv2.cvtColor(vis_img, cv2.COLOR_BGR2RGB)
+
+                                st.experimental_rerun() # Rerun to display results
+
+                            except ValueError as e: st.error(f"{view.capitalize()} Measurement Error: {e}")
+                            except ZeroDivisionError: st.error(f"{view.capitalize()} Measurement Error: Division by zero. Check inputs.")
+                            except Exception as e: st.error(f"Unexpected error during {view.capitalize()} measurement: {e}")
+                    else:
+                         st.warning(f"Cannot measure, required data for {view.capitalize()} view is missing.")
+
+
+            # --- Display Measurement Results (Front) ---
+            if st.session_state.get(f'results_calculated_{view}', False):
+                st.markdown(f"**{view.capitalize()} View Results:**")
+                 # ... (Keep the results display and reset button logic exactly as before, using `view` key) ...
+                if f'estimated_distance_ref_{view}' in st.session_state:
+                     st.write(f"Ref. Distance: {st.session_state[f'estimated_distance_ref_{view}']:.2f} m")
+                results = st.session_state.get(f'object_analysis_results_{view}', [])
+                if results:
+                    obj = results[0]
+                    st.write(f"Target Object ({view.capitalize()}):")
+                    st.write(f"- Dist: {obj['depth_meters']:.2f} m")
+                    st.write(f"- W: {obj['width_meters']*100:.1f} cm")
+                    st.write(f"- H: {obj['height_meters']*100:.1f} cm")
+                    if f'visualization_{view}' in st.session_state:
+                        st.image(st.session_state[f'visualization_{view}'], caption=f"{view.capitalize()} View Measurements", use_column_width=True)
+                else: st.warning(f"No valid target object found in {view.capitalize()} view.")
+                if st.button(f"Reset {view.capitalize()} Measurements", key=f"reset_{view}"):
+                    st.session_state[f'results_calculated_{view}'] = False
+                    keys_to_clear = [f'object_analysis_results_{view}', f'visualization_{view}', f'scale_factor_{view}', f'estimated_distance_ref_{view}']
+                    for key in keys_to_clear:
+                        if key in st.session_state: del st.session_state[key]
                     st.experimental_rerun()
 
 
-    else:
-        # Show placeholder or instructions if no image is uploaded
-        st.info("Upload an image using the button above to begin.")
-        # Clear all state if no file is present
-        keys_to_clear_on_no_file = ['depth_estimated', 'roi_defined_by_canvas', 'results_calculated', 'uploaded_file_id',
-                         'depth_map', 'depth_colored', 'image_bgr', 'image_rgb', 'image_pil', 'original_width', 'original_height',
-                         'object_analysis_results', 'roi_box_coords', 'visualization', 'scale_factor', 'estimated_distance_ref',
-                         'display_scale_factor'] # Clear scale factor too
-        state_cleared = False
-        for key in keys_to_clear_on_no_file:
-            if key in st.session_state:
-                del st.session_state[key]
-                state_cleared = True
-        # Optionally experimental_rerun if state was cleared to ensure UI consistency
-        # if state_cleared:
-        #    st.experimental_rerun()
+        else: # No front image uploaded
+            st.info("Upload Front View image using the button above.")
 
+
+    # ===========================================================
+    # ======== SIDE VIEW PROCESSING (Revised Logic) =============
+    # ===========================================================
+    with col_proc2:
+        st.markdown("#### Side View")
+        view = 'side' # Define current view context
+        uploaded_file = uploaded_file_side # Use specific variable
+
+        # --- Upload Handling & Image Loading (Side) ---
+        # (Exact same logic as Front view, just using 'side' keys and `uploaded_file_side`)
+        if uploaded_file is not None:
+            new_file_id = f"{uploaded_file.name}-{uploaded_file.size}"
+            if st.session_state.get(f'uploaded_file_id_{view}') != new_file_id:
+                st.session_state[f'uploaded_file_id_{view}'] = new_file_id
+                keys_to_clear = [
+                    f'depth_estimated_{view}', f'roi_defined_{view}', f'results_calculated_{view}',
+                    f'depth_map_{view}', f'depth_colored_{view}', f'image_bgr_{view}', f'image_rgb_{view}',
+                    f'image_pil_{view}', f'original_width_{view}', f'original_height_{view}',
+                    f'object_analysis_results_{view}', f'roi_box_coords_{view}', f'visualization_{view}',
+                    f'scale_factor_{view}', f'estimated_distance_ref_{view}', f'display_scale_factor_{view}'
+                ]
+                for key in keys_to_clear:
+                    if key in st.session_state: del st.session_state[key]
+                st.session_state[f'depth_estimated_{view}'] = False
+                st.session_state[f'roi_defined_{view}'] = False
+                st.session_state[f'results_calculated_{view}'] = False
+                st.info(f"New {view.capitalize()} view image uploaded. State reset for this view.")
+
+            if f'image_pil_{view}' not in st.session_state:
+                try:
+                    uploaded_file.seek(0)
+                    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+                    image_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+                    if image_bgr is None: raise ValueError("Could not decode image")
+                    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+                    image_pil = Image.fromarray(image_rgb)
+                    st.session_state[f'image_bgr_{view}'] = image_bgr
+                    st.session_state[f'image_rgb_{view}'] = image_rgb
+                    st.session_state[f'image_pil_{view}'] = image_pil
+                    st.session_state[f'original_width_{view}'] = image_pil.width
+                    st.session_state[f'original_height_{view}'] = image_pil.height
+                except Exception as e:
+                    st.error(f"Error loading {view.capitalize()} image: {e}")
+                    st.session_state[f'uploaded_file_id_{view}'] = None
+                    for key in [f'image_bgr_{view}', f'image_rgb_{view}', f'image_pil_{view}']:
+                         if key in st.session_state: del st.session_state[key]
+
+            if f'image_rgb_{view}' in st.session_state:
+                 st.image(st.session_state[f'image_rgb_{view}'], caption=f"{view.capitalize()} View Uploaded", use_column_width=True)
+
+            # --- Step 1: Depth Estimation (Side) ---
+            depth_button_disabled = not (f'image_pil_{view}' in st.session_state) or st.session_state.get(f'depth_estimated_{view}', False)
+            if st.button(f"Estimate Depth ({view.capitalize()})", key=f"estimate_depth_{view}", disabled=depth_button_disabled):
+                 if f'image_pil_{view}' in st.session_state:
+                    with st.spinner(f"Estimating {view.capitalize()} depth..."):
+                        # ... (predict_depth call and state setting, same as front) ...
+                        relative_depth_map = predict_depth(st.session_state[f'image_pil_{view}'], processor, model, device)
+                        if relative_depth_map is not None:
+                            st.session_state[f'depth_map_{view}'] = relative_depth_map
+                            st.session_state[f'depth_colored_{view}'] = normalize_depth_for_display(relative_depth_map)
+                            st.session_state[f'depth_estimated_{view}'] = True
+                            st.session_state[f'roi_defined_{view}'] = False
+                            st.session_state[f'results_calculated_{view}'] = False
+                            for key in [f'roi_box_coords_{view}', f'object_analysis_results_{view}', f'visualization_{view}', f'scale_factor_{view}', f'estimated_distance_ref_{view}', f'display_scale_factor_{view}']:
+                                if key in st.session_state: del st.session_state[key]
+                            st.experimental_rerun()
+                        else: st.error(f"{view.capitalize()} Depth estimation failed.")
+                 else: st.warning(f"Cannot estimate depth, {view.capitalize()} image data missing.")
+
+            if st.session_state.get(f'depth_estimated_{view}', False) and f'depth_colored_{view}' in st.session_state:
+                st.image(st.session_state[f'depth_colored_{view}'], caption=f"{view.capitalize()} Depth Map", use_column_width=True)
+
+            # --- Step 2: Reference Object Selection (Side) ---
+            if st.session_state.get(f'depth_estimated_{view}', False):
+                st.markdown(f"**Select Reference ({view.capitalize()})** - Draw rectangle (Known Dim: {KNOWN_OBJECT_WIDTH_METERS*100:.1f} cm)")
+                if f'image_pil_{view}' in st.session_state:
+                    # ... (Keep the Resizing Logic and Canvas setup exactly as before, using `view` key) ...
+                    MAX_CANVAS_DISPLAY_WIDTH_VIEW = 600
+                    original_pil_image = st.session_state[f'image_pil_{view}']
+                    original_width = st.session_state[f'original_width_{view}']
+                    original_height = st.session_state[f'original_height_{view}']
+                    if original_width > MAX_CANVAS_DISPLAY_WIDTH_VIEW:
+                        display_scale_factor = MAX_CANVAS_DISPLAY_WIDTH_VIEW / original_width; display_width = MAX_CANVAS_DISPLAY_WIDTH_VIEW; display_height = int(original_height * display_scale_factor)
+                        try: display_image = original_pil_image.resize((display_width, display_height), Image.Resampling.LANCZOS)
+                        except AttributeError: display_image = original_pil_image.resize((display_width, display_height), Image.LANCZOS)
+                        st.session_state[f'display_scale_factor_{view}'] = display_scale_factor
+                    else:
+                        display_image = original_pil_image; display_width = original_width; display_height = original_height
+                        st.session_state[f'display_scale_factor_{view}'] = 1.0
+
+                    canvas_result = st_canvas(
+                        fill_color="rgba(255, 165, 0, 0.1)", stroke_width=3, stroke_color="#FFFF00",
+                        background_image=display_image, update_streamlit=True,
+                        height=display_height, width=display_width, drawing_mode="rect", key=f"canvas_{view}",
+                    )
+                    # --- Process Canvas Result (Side) ---
+                    # ... (Keep the canvas result processing logic exactly as before, using `view` key) ...
+                    if canvas_result.json_data is not None:
+                        objects = canvas_result.json_data.get("objects", [])
+                        if objects and objects[-1]["type"] == "rect":
+                            rect_data = objects[-1]
+                            display_left = rect_data["left"]; display_top = rect_data["top"]; display_width_drawn = rect_data["width"]; display_height_drawn = rect_data["height"]
+                            if display_width_drawn > 5 and display_height_drawn > 5:
+                                scale_f = st.session_state.get(f'display_scale_factor_{view}', 1.0)
+                                ox1 = display_left / scale_f; oy1 = display_top / scale_f; ox2 = (display_left + display_width_drawn) / scale_f; oy2 = (display_top + display_height_drawn) / scale_f
+                                roi_coords = ((ox1, oy1), (ox2, oy2))
+                                old_roi = st.session_state.get(f'roi_box_coords_{view}')
+                                roi_changed = old_roi != roi_coords
+                                st.session_state[f'roi_box_coords_{view}'] = roi_coords
+                                if not st.session_state.get(f'roi_defined_{view}', False) or roi_changed:
+                                    st.session_state[f'roi_defined_{view}'] = True
+                                    st.session_state[f'results_calculated_{view}'] = False
+                                    st.success(f"{view.capitalize()} Reference Selected/Updated.")
+                            else:
+                                if st.session_state.get(f'roi_defined_{view}', False):
+                                    st.session_state[f'roi_defined_{view}'] = False; del st.session_state[f'roi_box_coords_{view}']
+                                    st.warning(f"{view.capitalize()} Ref rectangle too small.")
+                        elif not objects and st.session_state.get(f'roi_defined_{view}', False):
+                            st.session_state[f'roi_defined_{view}'] = False; del st.session_state[f'roi_box_coords_{view}']
+                            st.info(f"{view.capitalize()} Reference rectangle cleared.")
+
+                    if not st.session_state.get(f'roi_defined_{view}', False):
+                        st.info(f"Draw the reference rectangle on the {view.capitalize()} view image above.")
+                else: st.warning(f"Waiting for {view.capitalize()} image data for canvas.")
+
+
+            # --- Step 3: Measure Objects (Side) ---
+            if st.session_state.get(f'roi_defined_{view}', False):
+                measure_ready = all(k in st.session_state for k in [f'depth_map_{view}', f'roi_box_coords_{view}', f'original_width_{view}', f'original_height_{view}'])
+                measure_button_disabled = not measure_ready or st.session_state.get(f'results_calculated_{view}', False)
+
+                if st.button(f"Measure ({view.capitalize()})", key=f"measure_{view}", disabled=measure_button_disabled):
+                    if measure_ready:
+                        with st.spinner(f"Measuring {view.capitalize()} view objects..."):
+                            try:
+                                # --- Calculation Logic (Scale Factor, Detect, Filter, Dimensions) ---
+                                # ... (Keep the entire calculation block exactly as before, using `view` key) ...
+                                roi_box_coords = st.session_state[f'roi_box_coords_{view}']; roi_x1, roi_y1 = roi_box_coords[0]; roi_x2, roi_y2 = roi_box_coords[1]
+                                object_width_pixels_ref = round(roi_x2) - round(roi_x1)
+                                roi_y1_idx = max(0, int(round(roi_y1))); roi_y2_idx = min(st.session_state[f'original_height_{view}'], int(round(roi_y2)))
+                                roi_x1_idx = max(0, int(round(roi_x1))); roi_x2_idx = min(st.session_state[f'original_width_{view}'], int(round(roi_x2)))
+                                if object_width_pixels_ref <= 0 or roi_y2_idx <= roi_y1_idx or roi_x2_idx <= roi_x1_idx: raise ValueError("Invalid Reference Object dimensions.")
+                                roi_depth_values = st.session_state[f'depth_map_{view}'][roi_y1_idx:roi_y2_idx, roi_x1_idx:roi_x2_idx]
+                                valid_roi_depths = roi_depth_values[~np.isnan(roi_depth_values) & (roi_depth_values > 1e-9)]
+                                if valid_roi_depths.size == 0: raise ValueError("No valid depth for Reference ROI.")
+                                d_relative_ref = np.median(valid_roi_depths)
+                                if d_relative_ref <= 1e-9: raise ValueError("Reference depth is too small.")
+                                scale_factor = -1; estimated_distance_ref = -1
+                                img_width = st.session_state[f'original_width_{view}']; img_height = st.session_state[f'original_height_{view}']
+                                if USE_FOCAL_LENGTH_METHOD:
+                                    if KNOWN_FOCAL_LENGTH_PIXELS <= 0: raise ValueError("Focal length invalid.")
+                                    scale_factor = (KNOWN_OBJECT_WIDTH_METERS * KNOWN_FOCAL_LENGTH_PIXELS * d_relative_ref) / object_width_pixels_ref
+                                    estimated_distance_ref = scale_factor / d_relative_ref
+                                else: # FoV method
+                                    if HFOV_DEGREES <= 0 or VFOV_DEGREES <=0 or img_width <= 0: raise ValueError("FoV/Image params invalid.")
+                                    hfov_radians = math.radians(HFOV_DEGREES); tan_half_hfov = math.tan(hfov_radians / 2)
+                                    if abs(tan_half_hfov) <= 1e-9: raise ValueError("tan(HFOV/2) near zero.")
+                                    scale_factor = (KNOWN_OBJECT_WIDTH_METERS * img_width * d_relative_ref) / (object_width_pixels_ref * 2 * tan_half_hfov)
+                                    estimated_distance_ref = scale_factor / d_relative_ref
+                                if scale_factor <= 0 or estimated_distance_ref <= 0 or not np.isfinite(scale_factor) or not np.isfinite(estimated_distance_ref): raise ValueError(f"Invalid scale factor/ref distance")
+                                st.session_state[f'scale_factor_{view}'] = scale_factor
+                                st.session_state[f'estimated_distance_ref_{view}'] = estimated_distance_ref
+
+                                detected_boxes = multistage_object_detection(st.session_state[f'depth_map_{view}'], gradient_threshold, min_object_size, max_objects, object_padding_ratio)
+                                object_analysis_results = []
+                                if detected_boxes:
+                                    iou_threshold_ref = 0.3
+                                    ref_box_tuple = st.session_state[f'roi_box_coords_{view}']
+                                    for i, det_box in enumerate(detected_boxes):
+                                        iou_ref = calculate_iou(det_box, ref_box_tuple)
+                                        if iou_ref <= iou_threshold_ref:
+                                            x1_det, y1_det = round(det_box[0][0]), round(det_box[0][1]); x2_det, y2_det = round(det_box[1][0]), round(det_box[1][1])
+                                            y1_c, y2_c = max(0, int(y1_det)), min(img_height, int(y2_det)); x1_c, x2_c = max(0, int(x1_det)), min(img_width, int(x2_det))
+                                            if x2_c <= x1_c or y2_c <= y1_c: continue
+                                            det_depth_values = st.session_state[f'depth_map_{view}'][y1_c:y2_c, x1_c:x2_c]
+                                            valid_det_depths = det_depth_values[~np.isnan(det_depth_values) & (det_depth_values > 1e-9)]
+                                            if valid_det_depths.size > 0:
+                                                median_depth_rel = np.median(valid_det_depths)
+                                                if median_depth_rel > 1e-9:
+                                                    abs_depth = scale_factor / median_depth_rel
+                                                    width_m, height_m = calculate_real_world_dimensions(abs_depth, det_box, img_width, img_height, KNOWN_FOCAL_LENGTH_PIXELS if USE_FOCAL_LENGTH_METHOD else None, HFOV_DEGREES if not USE_FOCAL_LENGTH_METHOD else None, VFOV_DEGREES if not USE_FOCAL_LENGTH_METHOD else None)
+                                                    if np.isfinite(width_m) and np.isfinite(height_m) and width_m > 0 and height_m > 0 and abs_depth > 0:
+                                                        object_analysis_results.append({'index': 1, 'bbox': det_box, 'depth_meters': abs_depth, 'width_meters': width_m, 'height_meters': height_m})
+                                                        break
+
+                                st.session_state[f'object_analysis_results_{view}'] = object_analysis_results
+                                st.session_state[f'results_calculated_{view}'] = True
+
+                                if object_analysis_results:
+                                    vis_img = visualize_objects_with_dimensions(st.session_state[f'image_bgr_{view}'], object_analysis_results, st.session_state[f'roi_box_coords_{view}'])
+                                    st.session_state[f'visualization_{view}'] = cv2.cvtColor(vis_img, cv2.COLOR_BGR2RGB)
+
+                                st.experimental_rerun()
+
+                            except ValueError as e: st.error(f"{view.capitalize()} Measurement Error: {e}")
+                            except ZeroDivisionError: st.error(f"{view.capitalize()} Measurement Error: Division by zero. Check inputs.")
+                            except Exception as e: st.error(f"Unexpected error during {view.capitalize()} measurement: {e}")
+                    else:
+                        st.warning(f"Cannot measure, required data for {view.capitalize()} view is missing.")
+
+
+            # --- Display Measurement Results (Side) ---
+            if st.session_state.get(f'results_calculated_{view}', False):
+                st.markdown(f"**{view.capitalize()} View Results:**")
+                # ... (Keep the results display and reset button logic exactly as before, using `view` key and labeling width as depth) ...
+                if f'estimated_distance_ref_{view}' in st.session_state:
+                     st.write(f"Ref. Distance: {st.session_state[f'estimated_distance_ref_{view}']:.2f} m")
+                results = st.session_state.get(f'object_analysis_results_{view}', [])
+                if results:
+                    obj = results[0]
+                    st.write(f"Target Object ({view.capitalize()}):")
+                    st.write(f"- Dist: {obj['depth_meters']:.2f} m")
+                    st.write(f"- W (Depth): {obj['width_meters']*100:.1f} cm") # Label width as depth
+                    st.write(f"- H: {obj['height_meters']*100:.1f} cm")
+                    if f'visualization_{view}' in st.session_state:
+                        st.image(st.session_state[f'visualization_{view}'], caption=f"{view.capitalize()} View Measurements", use_column_width=True)
+                else: st.warning(f"No valid target object found in {view.capitalize()} view.")
+                if st.button(f"Reset {view.capitalize()} Measurements", key=f"reset_{view}"):
+                    st.session_state[f'results_calculated_{view}'] = False
+                    keys_to_clear = [f'object_analysis_results_{view}', f'visualization_{view}', f'scale_factor_{view}', f'estimated_distance_ref_{view}']
+                    for key in keys_to_clear:
+                        if key in st.session_state: del st.session_state[key]
+                    st.experimental_rerun()
+
+        else: # No side image uploaded
+            st.info("Upload Side View image using the button above.")
+
+
+    # --- Combined 3D Results Section ---
+    st.divider() # Add a visual separator
+    st.subheader("3. Final Combined 3D Dimensions")
+
+    # Check if results from BOTH views are available and valid
+    front_results_valid = (st.session_state.get('results_calculated_front', False) and
+                           isinstance(st.session_state.get('object_analysis_results_front'), list) and
+                           len(st.session_state.get('object_analysis_results_front', [])) > 0) # Check length safely
+    side_results_valid = (st.session_state.get('results_calculated_side', False) and
+                          isinstance(st.session_state.get('object_analysis_results_side'), list) and
+                          len(st.session_state.get('object_analysis_results_side', [])) > 0) # Check length safely
+
+    if front_results_valid and side_results_valid:
+        try:
+            # Extract dimensions from the *first* object found in each view's results list
+            front_obj = st.session_state['object_analysis_results_front'][0]
+            side_obj = st.session_state['object_analysis_results_side'][0]
+
+            # Assign dimensions based on views
+            final_width = front_obj['width_meters']
+            final_height_front = front_obj['height_meters']
+            final_depth = side_obj['width_meters']  # *** KEY ASSUMPTION ***
+            final_height_side = side_obj['height_meters']
+
+            # Average the height measurements
+            final_height = (final_height_front + final_height_side) / 2.0
+
+            # Use distance from the front view
+            final_distance = front_obj['depth_meters']
+
+            st.success("Combined 3D estimates:")
+            # Display using columns for better layout
+            res_col1, res_col2, res_col3, res_col4 = st.columns(4)
+            with res_col1:
+                st.metric(label="Width (from Front)", value=f"{final_width*100:.1f} cm")
+            with res_col2:
+                 st.metric(label="Depth (from Side)", value=f"{final_depth*100:.1f} cm") # Clarify source
+            with res_col3:
+                 st.metric(label="Height (Avg)", value=f"{final_height*100:.1f} cm")
+            with res_col4:
+                 st.metric(label="Distance (Front)", value=f"{final_distance:.2f} m") # Clarify source
+
+        except (KeyError, IndexError, TypeError) as e:
+            st.error(f"Error processing final results: {e}. Ensure both views measured a target object.")
+        except Exception as e:
+            st.error(f"An unexpected error occurred during final result combination: {e}")
+
+    elif not uploaded_file_front or not uploaded_file_side:
+         st.info("Upload both Front and Side images first.")
+    else:
+        st.warning("Process and Measure both Front and Side views completely to see combined 3D results.")
+        # Optionally show which view is missing results
+        if not front_results_valid: st.warning("- Front view results missing or invalid.")
+        if not side_results_valid: st.warning("- Side view results missing or invalid.")
 
 # --- Run the App ---
 if __name__ == "__main__":
