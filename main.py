@@ -12,7 +12,7 @@ from skimage import measure # Needed for object detection helper
 # %% Constants and Configuration
 MODEL_NAME = "Intel/dpt-hybrid-midas"  # Or "Intel/dpt-large"
 # --- IMPORTANT: SET THESE ---
-IMAGE_PATHS = [r"C:\Users\harsh\Downloads\PXL_20250418_052835918.jpg", r"C:\Users\harsh\Downloads\PXL_20250418_052835918.jpg"] # <-- CHANGE THIS - Needs an image from Pixel 6a with the reference object
+IMAGE_PATHS = [r"C:\Users\harsh\Downloads\WhatsApp Image 2025-04-28 at 09.59.20_04fe27d4.jpg", r"C:\Users\harsh\Downloads\WhatsApp Image 2025-04-28 at 09.52.40_e8159334.jpg"] # <-- CHANGE THIS - Needs an image from Pixel 6a with the reference object
 # <-- CHANGE THIS - Needs an image from Pixel 6a with the reference object
 KNOWN_OBJECT_WIDTH_METERS = 0.0856  # Standard ID-1 card width (e.g., credit card)
 # --- Camera Parameters (Approximate for Pixel 6a - VERIFY FOR YOUR DEVICE/SETTINGS) ---
@@ -61,7 +61,7 @@ def calculate_iou(box1, box2):
 
 # --- Object Detection Functions (kept as dependencies for multistage_object_detection) ---
 def detect_objects_from_depth_gradients_improved(depth_map, gradient_threshold=0.05,
-                                               blur_kernel_size=5, edge_closing_size=5,
+                                               blur_kernel_size=5, edge_closing_size=2,
                                                post_dilation_size=3, min_object_size=500,
                                                padding_ratio=0.05, max_objects=5):
     """Detects objects from depth gradients (internal helper)."""
@@ -166,7 +166,7 @@ def detect_objects_by_depth_thresholding(depth_map, threshold_factor=1.05, min_o
 def multistage_object_detection(depth_map, max_objects=5):
     """Combines gradient and threshold detection for robustness."""
     gradient_boxes = detect_objects_from_depth_gradients_improved(
-        depth_map, gradient_threshold=0.03, blur_kernel_size=5, edge_closing_size=7,
+        depth_map, gradient_threshold=0.05, blur_kernel_size=5, edge_closing_size=2,
         post_dilation_size=5, min_object_size=300, padding_ratio=0.1, max_objects=max_objects
     )
     if gradient_boxes:
