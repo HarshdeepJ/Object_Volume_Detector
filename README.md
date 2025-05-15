@@ -87,7 +87,7 @@ Before you begin, ensure you have the following installed on your system:
 
 1.  **Clone the Repository (Optional):**
 
-    If the code is hosted on a Git repository (like GitHub), you can clone it using:
+    You can clone the Git repository using:
 
     ```bash
     git clone https://github.com/HarshdeepJ/Object_Volume_Detector.git
